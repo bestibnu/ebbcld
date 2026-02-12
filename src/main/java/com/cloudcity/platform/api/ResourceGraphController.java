@@ -1,6 +1,7 @@
 package com.cloudcity.platform.api;
 
 import com.cloudcity.platform.api.dto.GraphResponse;
+import com.cloudcity.platform.api.dto.GraphSummaryResponse;
 import com.cloudcity.platform.api.dto.ResourceEdgeRequest;
 import com.cloudcity.platform.api.dto.ResourceEdgeResponse;
 import com.cloudcity.platform.api.dto.ResourceNodeRequest;
@@ -80,6 +81,11 @@ public class ResourceGraphController {
                 .map(this::toEdgeResponse)
                 .collect(Collectors.toList());
         return new GraphResponse(nodes, edges);
+    }
+
+    @GetMapping("/graph/summary")
+    public GraphSummaryResponse getGraphSummary(@PathVariable UUID projectId) {
+        return graphService.getGraphSummary(projectId);
     }
 
     private ResourceNodeResponse toNodeResponse(ResourceNode node) {

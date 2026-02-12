@@ -1,6 +1,7 @@
 package com.cloudcity.platform.repository;
 
 import com.cloudcity.platform.domain.ResourceEdge;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -10,4 +11,8 @@ public interface ResourceEdgeRepository extends JpaRepository<ResourceEdge, UUID
     List<ResourceEdge> findAllByProjectId(UUID projectId);
 
     Optional<ResourceEdge> findByIdAndProjectId(UUID id, UUID projectId);
+
+    long deleteByFromNodeIdIn(Collection<UUID> nodeIds);
+
+    long deleteByToNodeIdIn(Collection<UUID> nodeIds);
 }

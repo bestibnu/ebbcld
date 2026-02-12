@@ -1,5 +1,7 @@
 package com.cloudcity.platform.service;
 
+import com.cloudcity.platform.api.dto.GraphCostHotspotResponse;
+import com.cloudcity.platform.api.dto.GraphSummaryResponse;
 import com.cloudcity.platform.api.dto.ResourceEdgeRequest;
 import com.cloudcity.platform.api.dto.ResourceNodeRequest;
 import com.cloudcity.platform.api.dto.ResourceNodeUpdateRequest;
@@ -13,10 +15,13 @@ import com.cloudcity.platform.repository.ResourceEdgeRepository;
 import com.cloudcity.platform.repository.ResourceNodeRepository;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -146,6 +151,58 @@ public class ResourceGraphService {
     public List<ResourceEdge> getEdges(UUID projectId) {
         findProject(projectId);
         return edgeRepository.findAllByProjectId(projectId);
+    }
+
+    @Transactional(readOnly = true)
+    public GraphSummaryResponse getGraphSummary(UUID projectId) {
+        findProject(projectId);
+        List<ResourceNode> nodes = nodeRepository.findAllByProjectId(projectId);
+        List<ResourceEdge> edges = edgeRepository.findAllByProjectId(projectId);
+
+        Map<String, Long> nodeCountByType = new HashMap<>();
+        Map<String, Long> nodeCountByRegion = new HashMap<>();
+        Map<String, java.math.BigDecimal> estimatedCostByType = new HashMap<>();
+        Map<String, java.math.BigDecimal> estimatedCostByRegion = new HashMap<>();
+        java.math.BigDecimal totalEstimatedCost = java.math.BigDecimal.ZERO;
+
+        for (ResourceNode node : nodes) {
+            String typeKey = node.getType().name();
+            String regionKey = (node.getRegion() == null || node.getRegion().isBlank()) ? "unknown" : node.getRegion();
+            java.math.BigDecimal cost = node.getCostEstimate() == null ? java.math.BigDecimal.ZERO : node.getCostEstimate();
+
+            nodeCountByType.put(typeKey, nodeCountByType.getOrDefault(typeKey, 0L) + 1);
+            nodeCountByRegion.put(regionKey, nodeCountByRegion.getOrDefault(regionKey, 0L) + 1);
+            estimatedCostByType.put(typeKey, estimatedCostByType.getOrDefault(typeKey, java.math.BigDecimal.ZERO).add(cost));
+            estimatedCostByRegion.put(regionKey, estimatedCostByRegion.getOrDefault(regionKey, java.math.BigDecimal.ZERO).add(cost));
+            totalEstimatedCost = totalEstimatedCost.add(cost);
+        }
+
+        List<GraphCostHotspotResponse> topCostTypes = toTopHotspots(estimatedCostByType);
+        List<GraphCostHotspotResponse> topCostRegions = toTopHotspots(estimatedCostByRegion);
+
+        return new GraphSummaryResponse(
+                nodes.size(),
+                edges.size(),
+                nodeCountByType,
+                nodeCountByRegion,
+                totalEstimatedCost,
+                estimatedCostByType,
+                estimatedCostByRegion,
+                topCostTypes,
+                topCostRegions
+        );
+    }
+
+    private List<GraphCostHotspotResponse> toTopHotspots(Map<String, java.math.BigDecimal> costByKey) {
+        return costByKey.entrySet()
+                .stream()
+                .sorted(Comparator
+                        .<Map.Entry<String, java.math.BigDecimal>, java.math.BigDecimal>comparing(Map.Entry::getValue)
+                        .reversed()
+                        .thenComparing(Map.Entry::getKey))
+                .limit(3)
+                .map(entry -> new GraphCostHotspotResponse(entry.getKey(), entry.getValue()))
+                .collect(Collectors.toList());
     }
 
     private Project findProject(UUID projectId) {

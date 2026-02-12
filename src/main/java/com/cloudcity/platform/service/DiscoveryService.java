@@ -11,6 +11,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
@@ -37,6 +38,7 @@ public class DiscoveryService {
     private static final String STATUS_QUEUED = "QUEUED";
     private static final String STATUS_RUNNING = "RUNNING";
     private static final String STATUS_COMPLETED = "COMPLETED";
+    private static final String STATUS_FAILED = "FAILED";
 
     private final ProjectRepository projectRepository;
     private final DiscoveryRunRepository discoveryRunRepository;
@@ -160,25 +162,49 @@ public class DiscoveryService {
     private void runDiscovery(UUID projectId, UUID discoveryId) {
         DiscoveryRun run = discoveryRunRepository.findByIdAndProjectId(discoveryId, projectId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Discovery run not found"));
-        run.setStatus(STATUS_RUNNING);
-        run.setSummaryJson(updateProgress(run.getSummaryJson(), 60, false));
-        discoveryRunRepository.save(run);
+        try {
+            run.setStatus(STATUS_RUNNING);
+            run.setSummaryJson(updateProgress(run.getSummaryJson(), 60, false));
+            discoveryRunRepository.save(run);
 
-        List<String> regions = extractRegions(run.getSummaryJson());
-        if (regions.isEmpty()) {
-            regions = List.of("us-east-1");
-        }
-        for (String region : regions) {
-            ingestRegion(projectId, region);
-        }
+            List<String> regions = extractRegions(run.getSummaryJson());
+            if (regions.isEmpty()) {
+                regions = List.of("us-east-1");
+            }
+            for (String region : regions) {
+                ingestRegion(projectId, region);
+            }
 
-        run.setStatus(STATUS_COMPLETED);
-        run.setFinishedAt(OffsetDateTime.now(ZoneOffset.UTC));
-        run.setSummaryJson(updateProgress(run.getSummaryJson(), 100, true));
-        discoveryRunRepository.save(run);
+            run.setStatus(STATUS_COMPLETED);
+            run.setFinishedAt(OffsetDateTime.now(ZoneOffset.UTC));
+            run.setSummaryJson(updateProgress(run.getSummaryJson(), 100, true));
+            discoveryRunRepository.save(run);
+        } catch (RuntimeException e) {
+            run.setStatus(STATUS_FAILED);
+            run.setFinishedAt(OffsetDateTime.now(ZoneOffset.UTC));
+            run.setSummaryJson(updateFailure(run.getSummaryJson(), e.getMessage()));
+            discoveryRunRepository.save(run);
+        }
     }
 
     private void ingestRegion(UUID projectId, String region) {
+        // Make reruns idempotent for a provider+region by replacing previously discovered resources.
+        List<ResourceNode> existingNodes = resourceNodeRepository.findAllByProjectIdAndProviderAndRegionAndSource(
+            projectId,
+            CloudProvider.AWS,
+            region,
+            ResourceSource.DISCOVERED
+        );
+        if (!existingNodes.isEmpty()) {
+            List<UUID> nodeIds = new ArrayList<>();
+            for (ResourceNode existingNode : existingNodes) {
+                nodeIds.add(existingNode.getId());
+            }
+            resourceEdgeRepository.deleteByFromNodeIdIn(nodeIds);
+            resourceEdgeRepository.deleteByToNodeIdIn(nodeIds);
+            resourceNodeRepository.deleteAll(existingNodes);
+        }
+
         Map<String, ResourceNode> vpcsById = new HashMap<>();
         Map<String, ResourceNode> subnetsById = new HashMap<>();
 
@@ -319,6 +345,40 @@ public class DiscoveryService {
             return List.of();
         } catch (JsonProcessingException e) {
             return List.of();
+        }
+    }
+
+    private String updateFailure(String summaryJson, String errorMessage) {
+        Map<String, Object> summary = parseSummary(summaryJson);
+        summary.put("progress", 100);
+        summary.put("executed", false);
+        summary.put("failed", true);
+        summary.put("error", errorMessage == null ? "Unknown discovery error" : errorMessage);
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid discovery summary");
+        }
+    }
+
+    private Map<String, Object> parseSummary(String summaryJson) {
+        Map<String, Object> summary = new HashMap<>();
+        if (summaryJson == null || summaryJson.isBlank()) {
+            return summary;
+        }
+        try {
+            Object parsed = objectMapper.readValue(summaryJson, Object.class);
+            if (parsed instanceof Map) {
+                summary.putAll((Map<String, Object>) parsed);
+            } else if (parsed instanceof String) {
+                Object nested = objectMapper.readValue((String) parsed, Object.class);
+                if (nested instanceof Map) {
+                    summary.putAll((Map<String, Object>) nested);
+                }
+            }
+            return summary;
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid discovery summary");
         }
     }
 

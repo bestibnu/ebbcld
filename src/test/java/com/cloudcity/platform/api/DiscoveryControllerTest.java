@@ -6,6 +6,8 @@ import com.cloudcity.platform.domain.Org;
 import com.cloudcity.platform.domain.Project;
 import com.cloudcity.platform.repository.OrgRepository;
 import com.cloudcity.platform.repository.ProjectRepository;
+import com.cloudcity.platform.repository.ResourceEdgeRepository;
+import com.cloudcity.platform.repository.ResourceNodeRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.junit.jupiter.api.Assertions;
@@ -35,6 +37,12 @@ class DiscoveryControllerTest {
 
     @Autowired
     private ProjectRepository projectRepository;
+
+    @Autowired
+    private ResourceNodeRepository resourceNodeRepository;
+
+    @Autowired
+    private ResourceEdgeRepository resourceEdgeRepository;
 
     @Test
     void createAndFetchDiscovery() throws Exception {
@@ -93,5 +101,51 @@ class DiscoveryControllerTest {
 
         String statusValue = objectMapper.readTree(statusResponse).get("status").asText();
         Assertions.assertNotNull(statusValue);
+    }
+
+    @Test
+    void executeDiscoveryIsIdempotentForSameRegion() throws Exception {
+        Org org = new Org();
+        org.setName("Cloud City");
+        Org savedOrg = orgRepository.save(org);
+
+        Project project = new Project();
+        project.setOrg(savedOrg);
+        project.setName("Discovery");
+        Project savedProject = projectRepository.save(project);
+
+        DiscoveryCreateRequest request = new DiscoveryCreateRequest();
+        request.setProvider(CloudProvider.AWS);
+        request.setAccountId("123456789012");
+        request.setRegions(List.of("us-east-1"));
+
+        String createResponse = mockMvc.perform(post("/api/v1/projects/{projectId}/discoveries", savedProject.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        String discoveryId = objectMapper.readTree(createResponse).get("id").asText();
+
+        mockMvc.perform(post("/api/v1/projects/{projectId}/discoveries/{discoveryId}/execute",
+                        savedProject.getId(), discoveryId))
+                .andExpect(status().is2xxSuccessful());
+
+        int firstNodeCount = resourceNodeRepository.findAllByProjectId(savedProject.getId()).size();
+        int firstEdgeCount = resourceEdgeRepository.findAllByProjectId(savedProject.getId()).size();
+
+        mockMvc.perform(post("/api/v1/projects/{projectId}/discoveries/{discoveryId}/execute",
+                        savedProject.getId(), discoveryId))
+                .andExpect(status().is2xxSuccessful());
+
+        int secondNodeCount = resourceNodeRepository.findAllByProjectId(savedProject.getId()).size();
+        int secondEdgeCount = resourceEdgeRepository.findAllByProjectId(savedProject.getId()).size();
+
+        Assertions.assertEquals(firstNodeCount, secondNodeCount);
+        Assertions.assertEquals(firstEdgeCount, secondEdgeCount);
+        Assertions.assertEquals(7, secondNodeCount);
+        Assertions.assertEquals(6, secondEdgeCount);
     }
 }

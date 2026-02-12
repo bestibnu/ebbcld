@@ -11,6 +11,7 @@ import com.cloudcity.platform.domain.ResourceType;
 import com.cloudcity.platform.repository.OrgRepository;
 import com.cloudcity.platform.repository.ProjectRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -102,5 +103,62 @@ class ResourceGraphControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.nodes.length()").value(2))
                 .andExpect(jsonPath("$.edges.length()").value(1));
+    }
+
+    @Test
+    void getGraphSummaryAggregatesCountsAndCosts() throws Exception {
+        Org org = new Org();
+        org.setName("Cloud City");
+        Org savedOrg = orgRepository.save(org);
+
+        Project project = new Project();
+        project.setOrg(savedOrg);
+        project.setName("Graph Summary");
+        Project savedProject = projectRepository.save(project);
+
+        UUID projectId = savedProject.getId();
+
+        createNode(projectId, ResourceType.VPC, "vpc-main", "us-east-1", new BigDecimal("100.00"));
+        createNode(projectId, ResourceType.EC2, "app-1", "us-east-1", new BigDecimal("50.00"));
+        createNode(projectId, ResourceType.RDS, "db-main", "us-west-2", new BigDecimal("200.00"));
+        createNode(projectId, ResourceType.S3, "logs", null, new BigDecimal("25.00"));
+
+        mockMvc.perform(get("/api/v1/projects/{projectId}/graph/summary", projectId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalNodes").value(4))
+                .andExpect(jsonPath("$.totalEdges").value(0))
+                .andExpect(jsonPath("$.totalEstimatedCost").value(375))
+                .andExpect(jsonPath("$.nodeCountByType.VPC").value(1))
+                .andExpect(jsonPath("$.nodeCountByType.EC2").value(1))
+                .andExpect(jsonPath("$.nodeCountByType.RDS").value(1))
+                .andExpect(jsonPath("$.nodeCountByType.S3").value(1))
+                .andExpect(jsonPath("$.nodeCountByRegion['us-east-1']").value(2))
+                .andExpect(jsonPath("$.nodeCountByRegion['us-west-2']").value(1))
+                .andExpect(jsonPath("$.nodeCountByRegion.unknown").value(1))
+                .andExpect(jsonPath("$.estimatedCostByType.RDS").value(200))
+                .andExpect(jsonPath("$.estimatedCostByRegion['us-east-1']").value(150))
+                .andExpect(jsonPath("$.topCostTypes[0].key").value("RDS"))
+                .andExpect(jsonPath("$.topCostTypes[0].estimatedCost").value(200))
+                .andExpect(jsonPath("$.topCostRegions[0].key").value("us-west-2"))
+                .andExpect(jsonPath("$.topCostRegions[0].estimatedCost").value(200));
+    }
+
+    private void createNode(UUID projectId,
+                            ResourceType type,
+                            String name,
+                            String region,
+                            BigDecimal cost) throws Exception {
+        ResourceNodeRequest request = new ResourceNodeRequest();
+        request.setProvider(CloudProvider.AWS);
+        request.setType(type);
+        request.setName(name);
+        request.setRegion(region);
+        request.setSource(ResourceSource.PLANNED);
+        request.setCostEstimate(cost);
+
+        mockMvc.perform(post("/api/v1/projects/{projectId}/nodes", projectId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
     }
 }
