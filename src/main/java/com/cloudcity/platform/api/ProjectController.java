@@ -42,7 +42,7 @@ public class ProjectController {
     }
 
     @PatchMapping("/projects/{projectId}")
-    public ProjectResponse updateProject(@PathVariable UUID projectId, @RequestBody ProjectUpdateRequest request) {
+    public ProjectResponse updateProject(@PathVariable UUID projectId, @Valid @RequestBody ProjectUpdateRequest request) {
         Project project = projectService.updateProject(projectId, request);
         return toProjectResponse(project);
     }
@@ -53,6 +53,8 @@ public class ProjectController {
                 project.getOrg().getId(),
                 project.getName(),
                 project.getDescription(),
+                project.getMonthlyBudget(),
+                project.getBudgetWarningThreshold(),
                 project.getCreatedAt(),
                 project.getUpdatedAt()
         );

@@ -9,6 +9,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import java.math.BigDecimal;
 import java.util.UUID;
 
 @Entity
@@ -26,6 +27,12 @@ public class Project extends CreatedUpdatedEntity {
     private String name;
 
     private String description;
+
+    @Column(name = "monthly_budget", precision = 14, scale = 2)
+    private BigDecimal monthlyBudget;
+
+    @Column(name = "budget_warning_threshold", precision = 5, scale = 2)
+    private BigDecimal budgetWarningThreshold;
 
     public UUID getId() {
         return id;
@@ -53,5 +60,21 @@ public class Project extends CreatedUpdatedEntity {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public BigDecimal getMonthlyBudget() {
+        return monthlyBudget;
+    }
+
+    public void setMonthlyBudget(BigDecimal monthlyBudget) {
+        this.monthlyBudget = monthlyBudget;
+    }
+
+    public BigDecimal getBudgetWarningThreshold() {
+        return budgetWarningThreshold;
+    }
+
+    public void setBudgetWarningThreshold(BigDecimal budgetWarningThreshold) {
+        this.budgetWarningThreshold = budgetWarningThreshold;
     }
 }

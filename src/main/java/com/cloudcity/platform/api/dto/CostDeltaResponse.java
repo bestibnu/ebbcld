@@ -7,12 +7,27 @@ public class CostDeltaResponse {
     private BigDecimal currentTotal;
     private BigDecimal delta;
     private String currency;
+    private BudgetStatus budgetStatus;
+    private BigDecimal monthlyBudget;
+    private BigDecimal budgetUsedPercent;
+    private BigDecimal budgetWarningThreshold;
 
-    public CostDeltaResponse(BigDecimal previousTotal, BigDecimal currentTotal, BigDecimal delta, String currency) {
+    public CostDeltaResponse(BigDecimal previousTotal,
+                             BigDecimal currentTotal,
+                             BigDecimal delta,
+                             String currency,
+                             BudgetStatus budgetStatus,
+                             BigDecimal monthlyBudget,
+                             BigDecimal budgetUsedPercent,
+                             BigDecimal budgetWarningThreshold) {
         this.previousTotal = previousTotal;
         this.currentTotal = currentTotal;
         this.delta = delta;
         this.currency = currency;
+        this.budgetStatus = budgetStatus;
+        this.monthlyBudget = monthlyBudget;
+        this.budgetUsedPercent = budgetUsedPercent;
+        this.budgetWarningThreshold = budgetWarningThreshold;
     }
 
     public BigDecimal getPreviousTotal() {
@@ -29,5 +44,21 @@ public class CostDeltaResponse {
 
     public String getCurrency() {
         return currency;
+    }
+
+    public BudgetStatus getBudgetStatus() {
+        return budgetStatus;
+    }
+
+    public BigDecimal getMonthlyBudget() {
+        return monthlyBudget;
+    }
+
+    public BigDecimal getBudgetUsedPercent() {
+        return budgetUsedPercent;
+    }
+
+    public BigDecimal getBudgetWarningThreshold() {
+        return budgetWarningThreshold;
     }
 }

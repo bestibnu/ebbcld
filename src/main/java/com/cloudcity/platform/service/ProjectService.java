@@ -36,6 +36,8 @@ public class ProjectService {
         project.setOrg(org);
         project.setName(request.getName());
         project.setDescription(request.getDescription());
+        project.setMonthlyBudget(request.getMonthlyBudget());
+        project.setBudgetWarningThreshold(request.getBudgetWarningThreshold());
         return projectRepository.save(project);
     }
 
@@ -57,6 +59,12 @@ public class ProjectService {
         }
         if (request.getDescription() != null) {
             project.setDescription(request.getDescription());
+        }
+        if (request.getMonthlyBudget() != null) {
+            project.setMonthlyBudget(request.getMonthlyBudget());
+        }
+        if (request.getBudgetWarningThreshold() != null) {
+            project.setBudgetWarningThreshold(request.getBudgetWarningThreshold());
         }
         return projectRepository.save(project);
     }

@@ -1,6 +1,8 @@
 package com.cloudcity.platform.api;
 
 import com.cloudcity.platform.api.dto.CostDeltaResponse;
+import com.cloudcity.platform.api.dto.CostPolicyCheckRequest;
+import com.cloudcity.platform.api.dto.CostPolicyCheckResponse;
 import com.cloudcity.platform.api.dto.CostResponse;
 import com.cloudcity.platform.domain.CostSnapshot;
 import com.cloudcity.platform.service.CostService;
@@ -12,6 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -46,7 +49,23 @@ public class CostController {
         CostSnapshot latest = costService.getLatest(projectId);
         BigDecimal previous = latest == null ? BigDecimal.ZERO : latest.getTotalCost();
         BigDecimal current = costService.computeCurrentTotal(projectId);
-        return new CostDeltaResponse(previous, current, current.subtract(previous), costService.getCurrency());
+        CostService.BudgetEvaluation evaluation = costService.evaluateBudget(projectId, current);
+        return new CostDeltaResponse(
+                previous,
+                current,
+                current.subtract(previous),
+                costService.getCurrency(),
+                evaluation.status(),
+                evaluation.monthlyBudget(),
+                evaluation.usedPercent(),
+                evaluation.warningThreshold()
+        );
+    }
+
+    @PostMapping("/policy-check")
+    public CostPolicyCheckResponse policyCheck(@PathVariable UUID projectId,
+                                               @RequestBody(required = false) CostPolicyCheckRequest request) {
+        return costService.policyCheck(projectId, request);
     }
 
     private CostResponse toResponse(CostSnapshot snapshot) {
