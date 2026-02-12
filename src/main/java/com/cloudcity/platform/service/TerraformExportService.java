@@ -1,9 +1,12 @@
 package com.cloudcity.platform.service;
 
+import com.cloudcity.platform.api.dto.BudgetStatus;
+import com.cloudcity.platform.domain.AuditEvent;
 import com.cloudcity.platform.domain.Project;
 import com.cloudcity.platform.domain.ResourceNode;
 import com.cloudcity.platform.domain.ResourceType;
 import com.cloudcity.platform.domain.TerraformExport;
+import com.cloudcity.platform.repository.AuditEventRepository;
 import com.cloudcity.platform.repository.ProjectRepository;
 import com.cloudcity.platform.repository.ResourceNodeRepository;
 import com.cloudcity.platform.repository.TerraformExportRepository;
@@ -28,21 +31,32 @@ import org.springframework.web.server.ResponseStatusException;
 public class TerraformExportService {
     private static final String STATUS_READY = "READY";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
+    private static final String STATUS_APPROVED = "APPROVED";
+    private static final String STATUS_REJECTED = "REJECTED";
+    private static final String STATUS_APPLYING = "APPLYING";
+    private static final String STATUS_APPLIED = "APPLIED";
 
     private final ProjectRepository projectRepository;
     private final ResourceNodeRepository nodeRepository;
     private final TerraformExportRepository exportRepository;
+    private final AuditEventRepository auditEventRepository;
+    private final CostService costService;
     private final ObjectMapper objectMapper;
     private final String exportDir;
 
     public TerraformExportService(ProjectRepository projectRepository,
                                   ResourceNodeRepository nodeRepository,
                                   TerraformExportRepository exportRepository,
+                                  AuditEventRepository auditEventRepository,
+                                  CostService costService,
                                   ObjectMapper objectMapper,
                                   @Value("${cloudcity.terraform.export-dir}") String exportDir) {
         this.projectRepository = projectRepository;
         this.nodeRepository = nodeRepository;
         this.exportRepository = exportRepository;
+        this.auditEventRepository = auditEventRepository;
+        this.costService = costService;
         this.objectMapper = objectMapper;
         this.exportDir = exportDir;
     }
@@ -76,6 +90,87 @@ public class TerraformExportService {
     public TerraformExport getExport(UUID projectId, UUID exportId) {
         return exportRepository.findByIdAndProjectId(exportId, projectId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Export not found"));
+    }
+
+    @Transactional
+    public TerraformExport plan(UUID projectId) {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
+
+        List<ResourceNode> nodes = nodeRepository.findAllByProjectId(projectId);
+        ExportPayload payload = buildPayload(nodes);
+        validatePayload(payload);
+
+        TerraformExport export = new TerraformExport();
+        export.setProject(project);
+
+        try {
+            Path exportPath = writeExportFiles(projectId, payload);
+            export.setArtifactPath(exportPath.toString());
+        } catch (IOException e) {
+            export.setStatus(STATUS_FAILED);
+            export.setSummaryJson("{\"error\":\"Failed to write plan artifact\"}");
+            return exportRepository.save(export);
+        }
+
+        CostService.BudgetEvaluation evaluation = costService.evaluateBudget(projectId, costService.computeCurrentTotal(projectId));
+        String nextStatus = evaluation.status() == BudgetStatus.EXCEEDED ? STATUS_REJECTED : STATUS_PENDING_APPROVAL;
+        export.setStatus(nextStatus);
+        export.setSummaryJson(buildPlanSummary(payload, projectId, evaluation));
+        TerraformExport saved = exportRepository.save(export);
+
+        if (STATUS_REJECTED.equals(nextStatus)) {
+            createAuditEvent(projectId, "TERRAFORM_PLAN_BLOCKED", saved.getId(), saved.getSummaryJson());
+        } else {
+            createAuditEvent(projectId, "TERRAFORM_PLAN_CREATED", saved.getId(), saved.getSummaryJson());
+        }
+        return saved;
+    }
+
+    @Transactional
+    public TerraformExport approve(UUID projectId, UUID exportId, boolean approved, String reason) {
+        TerraformExport export = getExport(projectId, exportId);
+        if (!STATUS_PENDING_APPROVAL.equals(export.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Only PENDING_APPROVAL plans can be approved or rejected");
+        }
+
+        export.setStatus(approved ? STATUS_APPROVED : STATUS_REJECTED);
+        export.setSummaryJson(updateSummaryWithApproval(export.getSummaryJson(), approved, reason));
+        TerraformExport saved = exportRepository.save(export);
+
+        createAuditEvent(
+                projectId,
+                approved ? "TERRAFORM_PLAN_APPROVED" : "TERRAFORM_PLAN_REJECTED",
+                exportId,
+                saved.getSummaryJson()
+        );
+        return saved;
+    }
+
+    @Transactional
+    public TerraformExport apply(UUID projectId, UUID exportId) {
+        TerraformExport export = getExport(projectId, exportId);
+        if (!STATUS_APPROVED.equals(export.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Only APPROVED plans can be applied");
+        }
+
+        CostService.BudgetEvaluation evaluation = costService.evaluateBudget(projectId, costService.computeCurrentTotal(projectId));
+        if (evaluation.status() == BudgetStatus.EXCEEDED) {
+            export.setStatus(STATUS_FAILED);
+            export.setSummaryJson(updateSummaryWithApplyFailure(export.getSummaryJson(), "Budget policy check failed at apply"));
+            TerraformExport failed = exportRepository.save(export);
+            createAuditEvent(projectId, "TERRAFORM_APPLY_BLOCKED", exportId, failed.getSummaryJson());
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Budget policy check failed");
+        }
+
+        export.setStatus(STATUS_APPLYING);
+        exportRepository.save(export);
+
+        export.setStatus(STATUS_APPLIED);
+        export.setSummaryJson(updateSummaryWithApplySuccess(export.getSummaryJson()));
+        TerraformExport applied = exportRepository.save(export);
+        createAuditEvent(projectId, "TERRAFORM_APPLIED", exportId, applied.getSummaryJson());
+        return applied;
     }
 
     private ExportPayload buildPayload(List<ResourceNode> nodes) {
@@ -122,6 +217,73 @@ public class TerraformExportService {
             return objectMapper.writeValueAsString(summary);
         } catch (JsonProcessingException e) {
             return "{}";
+        }
+    }
+
+    private String buildPlanSummary(ExportPayload payload, UUID projectId, CostService.BudgetEvaluation evaluation) {
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("adds", payload.vpcs.size() + payload.subnets.size() + payload.sgs.size()
+                + payload.ec2.size() + payload.rds.size() + payload.elbs.size() + payload.s3.size());
+        summary.put("changes", 0);
+        summary.put("destroys", 0);
+        summary.put("estimatedMonthlyDelta", computeEstimatedMonthlyDelta(projectId));
+        summary.put("budgetStatus", evaluation.status().name());
+        summary.put("monthlyBudget", evaluation.monthlyBudget());
+        summary.put("budgetUsedPercent", evaluation.usedPercent());
+        summary.put("budgetWarningThreshold", evaluation.warningThreshold());
+        summary.put("resourceCounts", parseMap(serializeSummary(payload)));
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException e) {
+            return "{}";
+        }
+    }
+
+    private Map<String, Object> parseMap(String json) {
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(json, Map.class);
+            return new HashMap<>(parsed);
+        } catch (JsonProcessingException e) {
+            return new HashMap<>();
+        }
+    }
+
+    private java.math.BigDecimal computeEstimatedMonthlyDelta(UUID projectId) {
+        var latest = costService.getLatest(projectId);
+        java.math.BigDecimal previous = latest == null ? java.math.BigDecimal.ZERO : latest.getTotalCost();
+        java.math.BigDecimal current = costService.computeCurrentTotal(projectId);
+        return current.subtract(previous);
+    }
+
+    private String updateSummaryWithApproval(String summaryJson, boolean approved, String reason) {
+        Map<String, Object> summary = parseMap(summaryJson == null ? "{}" : summaryJson);
+        summary.put("approval", approved ? "APPROVED" : "REJECTED");
+        summary.put("approvalReason", reason);
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException e) {
+            return summaryJson;
+        }
+    }
+
+    private String updateSummaryWithApplyFailure(String summaryJson, String error) {
+        Map<String, Object> summary = parseMap(summaryJson == null ? "{}" : summaryJson);
+        summary.put("applyStatus", "FAILED");
+        summary.put("applyError", error);
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException e) {
+            return summaryJson;
+        }
+    }
+
+    private String updateSummaryWithApplySuccess(String summaryJson) {
+        Map<String, Object> summary = parseMap(summaryJson == null ? "{}" : summaryJson);
+        summary.put("applyStatus", "APPLIED");
+        try {
+            return objectMapper.writeValueAsString(summary);
+        } catch (JsonProcessingException e) {
+            return summaryJson;
         }
     }
 
@@ -224,6 +386,16 @@ public class TerraformExportService {
         if (!payload.elbs.isEmpty() && payload.subnets.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Load balancers require at least one subnet");
         }
+    }
+
+    private void createAuditEvent(UUID projectId, String action, UUID entityId, String changesJson) {
+        AuditEvent event = new AuditEvent();
+        event.setProject(projectRepository.getReferenceById(projectId));
+        event.setAction(action);
+        event.setEntityType("TERRAFORM_EXPORT");
+        event.setEntityId(entityId);
+        event.setChangesJson(changesJson);
+        auditEventRepository.save(event);
     }
 
     private String escape(String value) {
