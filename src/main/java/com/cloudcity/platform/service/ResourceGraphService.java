@@ -1,6 +1,8 @@
 package com.cloudcity.platform.service;
 
 import com.cloudcity.platform.api.dto.GraphCostHotspotResponse;
+import com.cloudcity.platform.api.dto.GraphHealthIssueResponse;
+import com.cloudcity.platform.api.dto.GraphHealthResponse;
 import com.cloudcity.platform.api.dto.GraphSummaryResponse;
 import com.cloudcity.platform.api.dto.ResourceEdgeRequest;
 import com.cloudcity.platform.api.dto.ResourceNodeRequest;
@@ -16,6 +18,7 @@ import com.cloudcity.platform.repository.ResourceNodeRepository;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -191,6 +194,64 @@ public class ResourceGraphService {
                 topCostTypes,
                 topCostRegions
         );
+    }
+
+    @Transactional(readOnly = true)
+    public GraphHealthResponse getGraphHealth(UUID projectId) {
+        findProject(projectId);
+        List<ResourceNode> nodes = nodeRepository.findAllByProjectId(projectId);
+        List<ResourceEdge> edges = edgeRepository.findAllByProjectId(projectId);
+
+        Set<UUID> connectedNodeIds = new HashSet<>();
+        for (ResourceEdge edge : edges) {
+            connectedNodeIds.add(edge.getFromNode().getId());
+            connectedNodeIds.add(edge.getToNode().getId());
+        }
+
+        List<GraphHealthIssueResponse> orphanNodes = new java.util.ArrayList<>();
+        List<GraphHealthIssueResponse> misconfiguredNodes = new java.util.ArrayList<>();
+        for (ResourceNode node : nodes) {
+            if (!connectedNodeIds.contains(node.getId()) && node.getType() != ResourceType.REGION) {
+                orphanNodes.add(new GraphHealthIssueResponse(
+                        node.getId(),
+                        node.getType().name(),
+                        node.getName(),
+                        "Node has no incoming/outgoing relationship"
+                ));
+            }
+            String configIssue = detectConfigIssue(node);
+            if (configIssue != null) {
+                misconfiguredNodes.add(new GraphHealthIssueResponse(
+                        node.getId(),
+                        node.getType().name(),
+                        node.getName(),
+                        configIssue
+                ));
+            }
+        }
+
+        return new GraphHealthResponse(
+                nodes.size(),
+                edges.size(),
+                orphanNodes.size(),
+                misconfiguredNodes.size(),
+                orphanNodes,
+                misconfiguredNodes
+        );
+    }
+
+    private String detectConfigIssue(ResourceNode node) {
+        if (node.getType() == ResourceType.VPC && (node.getRegion() == null || node.getRegion().isBlank())) {
+            return "VPC is missing region";
+        }
+        if (node.getType() == ResourceType.SUBNET && (node.getRegion() == null || node.getRegion().isBlank())) {
+            return "Subnet is missing region";
+        }
+        if ((node.getType() == ResourceType.EC2 || node.getType() == ResourceType.RDS || node.getType() == ResourceType.ELB)
+                && (node.getRegion() == null || node.getRegion().isBlank())) {
+            return node.getType().name() + " is missing region";
+        }
+        return null;
     }
 
     private List<GraphCostHotspotResponse> toTopHotspots(Map<String, java.math.BigDecimal> costByKey) {

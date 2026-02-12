@@ -7,7 +7,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.util.UUID;
@@ -26,7 +25,6 @@ public class TerraformExport extends CreatedEntity {
     @Column(nullable = false)
     private String status;
 
-    @Lob
     @Column(name = "summary_json", columnDefinition = "jsonb")
     private String summaryJson;
 

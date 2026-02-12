@@ -9,7 +9,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.Lob;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
@@ -42,7 +41,6 @@ public class DiscoveryRun {
     @Column(name = "finished_at")
     private OffsetDateTime finishedAt;
 
-    @Lob
     @Column(name = "summary_json", columnDefinition = "jsonb")
     private String summaryJson;
 

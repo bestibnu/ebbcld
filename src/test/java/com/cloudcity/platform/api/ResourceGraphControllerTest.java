@@ -143,11 +143,49 @@ class ResourceGraphControllerTest {
                 .andExpect(jsonPath("$.topCostRegions[0].estimatedCost").value(200));
     }
 
+    @Test
+    void getGraphHealthDetectsOrphansAndMisconfiguredNodes() throws Exception {
+        Org org = new Org();
+        org.setName("Cloud City");
+        Org savedOrg = orgRepository.save(org);
+
+        Project project = new Project();
+        project.setOrg(savedOrg);
+        project.setName("Graph Health");
+        Project savedProject = projectRepository.save(project);
+
+        UUID projectId = savedProject.getId();
+
+        String vpcId = createNodeAndReturnId(projectId, ResourceType.VPC, "vpc-main", "us-east-1", null);
+        String subnetId = createNodeAndReturnId(projectId, ResourceType.SUBNET, "subnet-main", "us-east-1", null);
+        String ec2Id = createNodeAndReturnId(projectId, ResourceType.EC2, "app-1", "us-east-1", null);
+        createEdge(projectId, vpcId, subnetId);
+        createEdge(projectId, subnetId, ec2Id);
+
+        createNode(projectId, ResourceType.EC2, "orphan-ec2", "us-east-1", null);
+        createNode(projectId, ResourceType.SUBNET, "bad-subnet", null, null);
+
+        mockMvc.perform(get("/api/v1/projects/{projectId}/graph/health", projectId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalNodes").value(5))
+                .andExpect(jsonPath("$.totalEdges").value(2))
+                .andExpect(jsonPath("$.orphanNodeCount").value(2))
+                .andExpect(jsonPath("$.misconfiguredNodeCount").value(1));
+    }
+
     private void createNode(UUID projectId,
                             ResourceType type,
                             String name,
                             String region,
                             BigDecimal cost) throws Exception {
+        createNodeAndReturnId(projectId, type, name, region, cost);
+    }
+
+    private String createNodeAndReturnId(UUID projectId,
+                                         ResourceType type,
+                                         String name,
+                                         String region,
+                                         BigDecimal cost) throws Exception {
         ResourceNodeRequest request = new ResourceNodeRequest();
         request.setProvider(CloudProvider.AWS);
         request.setType(type);
@@ -156,9 +194,24 @@ class ResourceGraphControllerTest {
         request.setSource(ResourceSource.PLANNED);
         request.setCostEstimate(cost);
 
-        mockMvc.perform(post("/api/v1/projects/{projectId}/nodes", projectId)
+        return objectMapper.readTree(mockMvc.perform(post("/api/v1/projects/{projectId}/nodes", projectId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString()).get("id").asText();
+    }
+
+    private void createEdge(UUID projectId, String fromNodeId, String toNodeId) throws Exception {
+        ResourceEdgeRequest edgeRequest = new ResourceEdgeRequest();
+        edgeRequest.setFromNodeId(UUID.fromString(fromNodeId));
+        edgeRequest.setToNodeId(UUID.fromString(toNodeId));
+        edgeRequest.setRelationType(RelationType.CONTAINS);
+
+        mockMvc.perform(post("/api/v1/projects/{projectId}/edges", projectId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(edgeRequest)))
                 .andExpect(status().isCreated());
     }
 }
